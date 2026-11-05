@@ -148,7 +148,7 @@ test('concurrent processes share the lock rather than overwriting increments', a
   const path = join(directory, 'counter.txt');
   const worker = fileURLToPath(new URL('./fixtures/update-worker.mjs', import.meta.url));
   const outcomes = await Promise.allSettled(Array.from({ length: 3 }, () =>
-    promisify(execFile)(process.execPath, [worker, path], { windowsHide: true })));
+    promisify(execFile)(process.execPath, [worker, path], { windowsHide: true, timeout: 60_000 })));
   const failures = outcomes.filter(outcome => outcome.status === 'rejected').map(outcome => outcome.reason);
   if (failures.length) throw new AggregateError(failures, 'Contending worker processes failed.');
   assert.equal(await readFile(path, 'utf8'), '24');
