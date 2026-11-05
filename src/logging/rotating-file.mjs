@@ -19,13 +19,14 @@ export function createRotatingFileSink({ path, maxBytes = 2 * 1024 * 1024, backu
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || !Number.isSafeInteger(backups) || backups < 1) {
     throw new RangeError('Log size and backup count must be positive integers.');
   }
+  let pending = Promise.resolve();
   return async record => {
     const encoded = JSON.stringify(record);
     if (encoded === undefined) throw new TypeError('Log records must be JSON serializable.');
     const line = `${encoded}\n`;
     const bytes = Buffer.byteLength(line, 'utf8');
     if (bytes > maxBytes) throw new RangeError('Log record exceeds the configured file size limit.');
-    await withFileLock(`${path}.lock`, async () => {
+    const write = () => withFileLock(`${path}.lock`, async () => {
       const current = await size(path);
       if (current > 0 && current + bytes > maxBytes) {
         for (let index = backups - 1; index >= 0; index--) {
@@ -39,5 +40,8 @@ export function createRotatingFileSink({ path, maxBytes = 2 * 1024 * 1024, backu
       }
       await appendFile(path, line, { encoding: 'utf8', mode: 0o600 });
     });
+    const result = pending.then(write, write);
+    pending = result;
+    return result;
   };
 }

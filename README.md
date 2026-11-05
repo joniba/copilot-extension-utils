@@ -55,6 +55,8 @@ enable them. A disabled debug record returns `null` without invoking destination
 File output defaults to 2 MiB per file and three backups. Oversized records reject
 before writing. Successful calls close the file, permitting subsequent rotation
 on systems with restrictive file sharing. Separate writers use the same lock.
+Each sink queues its calls in order instead of polling its own lock concurrently.
+A failed write rejects its caller without preventing subsequent queued writes.
 The caller owns the log path, its numbered backups, and its `.lock` path.
 
 ## Files and settings

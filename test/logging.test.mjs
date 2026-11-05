@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import test from 'node:test';
 import { redact } from 'copilot-extension-utils/logging/redaction';
@@ -97,9 +99,40 @@ test('separate file sinks coordinate writes without lost or broken records', asy
   const path = join(directory, 'debug.jsonl');
   const left = createRotatingFileSink({ path });
   const right = createRotatingFileSink({ path });
-  await Promise.all(Array.from({ length: 20 }, (_, index) => (index % 2 ? left : right)({ index })));
+  const outcomes = await Promise.allSettled(Array.from({ length: 20 }, (_, index) =>
+    (index % 2 ? left : right)({ index })));
+  const failures = outcomes.filter(outcome => outcome.status === 'rejected').map(outcome => outcome.reason);
+  if (failures.length) throw new AggregateError(failures, 'Contending file sinks failed.');
   const records = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(records.map(record => record.index).sort((a, b) => a - b), Array.from({ length: 20 }, (_, i) => i));
+  for (const parity of [0, 1]) {
+    assert.deepEqual(records.filter(record => record.index % 2 === parity).map(record => record.index),
+      Array.from({ length: 10 }, (_, index) => index * 2 + parity));
+  }
+  await assert.rejects(stat(`${path}.lock`), { code: 'ENOENT' });
+});
+
+test('a failed append remains observable without poisoning later queued writes', async t => {
+  const directory = await fixture(t);
+  const path = join(directory, 'debug.jsonl');
+  const failure = new Error('append failed');
+  const append = fs.appendFile;
+  let attempts = 0;
+  const mocked = t.mock.method(fs, 'appendFile', async (...args) => {
+    if (++attempts === 1) throw failure;
+    return append(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const sink = createRotatingFileSink({ path });
+  const outcomes = await Promise.allSettled([sink({ index: 1 }), sink({ index: 2 })]);
+  assert.equal(outcomes[0].status, 'rejected');
+  assert.equal(outcomes[0].reason, failure);
+  assert.equal(outcomes[1].status, 'fulfilled');
+  assert.equal(JSON.parse((await readFile(path, 'utf8')).trim()).index, 2);
   await assert.rejects(stat(`${path}.lock`), { code: 'ENOENT' });
 });
 
