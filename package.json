@@ -1,0 +1,27 @@
+{
+  "name": "copilot-extension-utils",
+  "version": "0.1.0",
+  "description": "Small, independently importable extension utilities",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./diagnostics/operation": "./src/diagnostics/operation.mjs",
+    "./logging/redaction": "./src/logging/redaction.mjs",
+    "./logging/logger": "./src/logging/logger.mjs",
+    "./logging/rotating-file": "./src/logging/rotating-file.mjs",
+    "./files/lock": "./src/files/lock.mjs",
+    "./files/atomic": "./src/files/atomic.mjs",
+    "./settings/jsonc": "./src/settings/jsonc.mjs",
+    "./settings/store": "./src/settings/store.mjs"
+  },
+  "files": ["src/", "PLAN.md"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
