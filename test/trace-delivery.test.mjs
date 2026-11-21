@@ -60,6 +60,30 @@ test('quiet tracing preserves safe integer codes, raw error identity and cancell
   assert.ok(!JSON.stringify(records).includes('private'));
 });
 
+test('aggregate cancellation requires every branch to cancel regardless of the code allowlist', async () => {
+  const abort = Object.assign(new Error('cancelled'), { code: 'ABORT_ERR' });
+  const allAborted = new AggregateError([abort, new AggregateError([abort])]);
+  const mixed = new AggregateError([abort, new Error('failed')], 'mixed', { cause: abort });
+  const cycle = new AggregateError([abort]);
+  cycle.errors.push(cycle);
+  const tooWide = new AggregateError([...Array(32).fill(abort), new Error('failed')]);
+
+  for (const codes of [[], ['ABORT_ERR']]) {
+    const records = [];
+    const tracer = createOperationTracer({ codes, submit: record => records.push(record) });
+    for (const error of [allAborted, mixed, cycle, tooWide]) {
+      await assert.rejects(tracer.run('worker.run', () => Promise.reject(error)), reason => reason === error);
+    }
+    assert.deepEqual(records.map(({ event, level }) => [event, level]), [
+      ['worker.run.cancelled', 'warn'],
+      ['worker.run.failed', 'error'],
+      ['worker.run.failed', 'error'],
+      ['worker.run.failed', 'error'],
+    ]);
+    assert.equal(records[0].fields.code, codes[0] ?? 'UNKNOWN');
+  }
+});
+
 test('a malformed diagnostic error cannot replace the original rejection', async () => {
   const tracer = createOperationTracer({ submit() {} });
   const malformed = { name: 'AggregateError', errors: { length: Symbol() } };

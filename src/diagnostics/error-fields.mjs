@@ -10,10 +10,24 @@ export function errorField(object, key) {
 }
 
 export function isCancellation(error) {
-  for (let depth = 0, cause = error; depth < 8 && cause != null; depth++, cause = errorField(cause, 'cause')) {
-    if (errorField(cause, 'name') === 'AbortError' || errorField(cause, 'code') === 'ABORT_ERR') return true;
+  let remaining = 32;
+  function cancelled(cause, depth) {
+    if (cause == null || depth >= 8 || remaining-- <= 0) return false;
+    const name = errorField(cause, 'name');
+    if (name === 'AggregateError') {
+      const children = errorField(cause, 'errors');
+      const length = errorField(children, 'length');
+      // A partial inspection cannot establish that every branch cancelled.
+      if (!Number.isSafeInteger(length) || length < 1 || length > remaining) return false;
+      for (let index = 0; index < length; index++) {
+        if (!cancelled(errorField(children, index), depth + 1)) return false;
+      }
+      return true;
+    }
+    if (name === 'AbortError' || errorField(cause, 'code') === 'ABORT_ERR') return true;
+    return cancelled(errorField(cause, 'cause'), depth + 1);
   }
-  return false;
+  return cancelled(error, 0);
 }
 
 export function summarizeError(error, codes) {
