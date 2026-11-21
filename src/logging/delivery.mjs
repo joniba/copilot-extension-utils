@@ -1,19 +1,32 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { isContextValue, validContextKeys } from '../diagnostics/context-fields.mjs';
 import { errorField, isErrorCode, safeRecordedError, summarizeError } from '../diagnostics/error-fields.mjs';
 
 const validName = name => typeof name === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(name);
 const increment = (value, amount = 1) => Math.min(value + amount, Number.MAX_SAFE_INTEGER);
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
+const reservedContext = new Set(['code', 'errorType']);
+
+function summarizeOrigin(record, codes, keys) {
+  const fields = record.fields;
+  const original = { ...safeRecordedError(fields ?? record, codes) };
+  for (const key of keys) {
+    const topLevelEvent = key === 'event' && Object.hasOwn(record, key);
+    const source = !topLevelEvent && fields != null && Object.hasOwn(fields, key) ? fields : record;
+    if (Object.hasOwn(source, key) && isContextValue(source[key])) original[key] = source[key];
+  }
+  return Object.keys(original).length ? original : undefined;
+}
 
 export function createLogDelivery({
   destinations, capacity = 64, maxRecordBytes = 16_384, maxPendingBytes = 1_048_576,
-  suppressionMs = 0, suppressionKeys = 32, codes = [], onLoss,
+  suppressionMs = 0, suppressionKeys = 32, codes = [], contextKeys = [], onLoss,
 }) {
   if (!Array.isArray(destinations) || destinations.length < 1 || destinations.length > 16
     || !integer(capacity, 1, 1024) || !integer(maxRecordBytes, 1, 65_536)
     || !integer(maxPendingBytes, 1, 16_777_216)
     || !integer(suppressionMs, 0, 86_400_000) || !integer(suppressionKeys, 1, 1024)
-    || !Array.isArray(codes) || !Array.from(codes).every(isErrorCode)
+    || !Array.isArray(codes) || !Array.from(codes).every(isErrorCode) || !validContextKeys(contextKeys, reservedContext)
     || (onLoss !== undefined && typeof onLoss !== 'function')) {
     throw new TypeError('Invalid log delivery options.');
   }
@@ -30,6 +43,7 @@ export function createLogDelivery({
   });
   const writers = new AsyncLocalStorage();
   const acceptedCodes = new Set(codes);
+  const allowedContext = new Set(contextKeys);
   let closed = false;
   let invalid = 0;
   let reentrant = 0;
@@ -96,7 +110,7 @@ export function createLogDelivery({
       }
       sink.active = true;
       const record = JSON.parse(encoded);
-      const original = safeRecordedError(record.fields ?? record, acceptedCodes);
+      const original = summarizeOrigin(record, acceptedCodes, allowedContext);
       void writers.run(true, async () => {
         try {
           await sink.write(record);

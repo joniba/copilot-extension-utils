@@ -292,6 +292,72 @@ test('a rejected write with confirmed bytes counts as delivered without replay',
   delivery.close();
 });
 
+for (const [reported, outcome, counter] of [
+  [undefined, 'failed', 'failed'],
+  ['uncertain', 'uncertain', 'uncertain'],
+  ['written', 'written', 'postDeliveryFailures'],
+]) {
+  test(`${outcome} delivery preserves only approved context for flat and traced records`, { timeout: 5000 }, async () => {
+    const context = {
+      sessionId: 'session-1', requestId: 'request-2', phase: 'event', operation: 'metadata.snapshot',
+      compactionEpoch: 3, recoveryPending: false,
+    };
+    const contextKeys = Object.keys(context);
+    const expectedError = { code: -32603, errorType: 'ResponseError' };
+    for (const nested of [false, true]) {
+      const observed = Promise.withResolvers();
+      let operationId;
+      const delivery = createLogDelivery({
+        codes: [-32603, 'EIO'],
+        contextKeys: [...contextKeys, 'event', 'operationId', 'longId', 'invalidId', 'nestedValue'],
+        destinations: [{ name: 'file', write(record) {
+          operationId = nested ? record.fields.operationId : record.operationId;
+          if (nested) record.fields.requestId = 'mutated';
+          else record.requestId = 'mutated';
+          throw Object.assign(new Error('private log error'), { code: 'EIO', deliveryOutcome: reported });
+        } }],
+        onLoss: observed.resolve,
+      });
+      const event = nested ? 'metadata.snapshot.failed' : 'bridge';
+      const excluded = {
+        longId: 'x'.repeat(129), invalidId: 'unsafe/path', nestedValue: { code: 'EIO' },
+        body: 'rawNote', stack: 'rawStack', gateDecision: 'not-allowed',
+      };
+      try {
+        if (nested) {
+          const trace = createOperationTracer({
+            codes: [-32603],
+            contextKeys,
+            submit(record) {
+              return delivery.submit({
+                ...record, requestId: 'outer-request',
+                fields: { ...record.fields, ...excluded, event: 'not-the-envelope' },
+              });
+            },
+          });
+          const failure = Object.assign(new Error('private original error'), { name: 'ResponseError', code: -32603 });
+          await assert.rejects(trace.run('metadata.snapshot', () => Promise.reject(failure), context),
+            error => error === failure);
+        } else {
+          assert.equal(delivery.submit({ event, operationId: 'legacy-op', ...context, ...expectedError, ...excluded }), 1);
+        }
+        const [file] = (await observed.promise).destinations;
+        assert.ok(operationId);
+        assert.equal(file[counter], 1);
+        assert.equal(file.delivered, reported === 'written' ? 1 : 0);
+        assert.deepEqual(file.lastFailure, {
+          outcome,
+          original: { ...expectedError, ...context, event, operationId },
+          diagnostic: { code: 'EIO', errorType: 'Error' },
+        });
+        assert.deepEqual(delivery.getHealth().destinations[0].lastFailure, file.lastFailure);
+      } finally {
+        delivery.close();
+      }
+    }
+  });
+}
+
 test('lazy destination error fields cannot enqueue back into the same destination', { timeout: 5000 }, async () => {
   const observed = Promise.withResolvers();
   const seen = [];

@@ -107,7 +107,7 @@ need the agreed size, overlapping-writer and interrupted-write behavior.
 | Consumer evidence to preserve | Shared requirement and integration check |
 | --- | --- |
 | Startup stage, version and readiness | A dependency-free consumer bootstrap reports import/attach failures. An installed fixture still runs with missing, damaged or pending optional modules. |
-| Safe failure detail and actionable warnings | Allowlisted strings and integer error codes survive unchanged. Original and delivery failures remain distinct. User warnings stay at their existing decision point; compare text, count and severity. |
+| Safe failure detail and actionable warnings | Allowlisted strings and integer error codes survive unchanged. Retain approved original operation and correlation context separately from delivery failures. User warnings stay at their existing decision point; compare text, count and severity. |
 | Operation and cancellation lifecycles | Start is observable while work is pending. Success, failure and cancellation retain their original outcomes even if a sink fails or stalls. |
 | State transitions, duplicates and recovery | Pass consumer records through unchanged after safe projection; compare transition order and cycle identity. Do not report persistence prematurely. |
 | Pressure, escalation and skipped work | Preserve consumer decisions and warning destinations. Suppression must not hide distinct requests, cycles or outcomes. |

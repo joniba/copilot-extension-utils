@@ -9,6 +9,7 @@ const utility = new URL('../', import.meta.resolve('copilot-extension-utils/diag
 const sources = [
   ['entry.mjs', new URL('./entry.mjs', import.meta.url)],
   ...[
+    'diagnostics/context-fields.mjs',
     'diagnostics/error-fields.mjs',
     'diagnostics/operation.mjs',
     'diagnostics/trace.mjs',

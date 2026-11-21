@@ -50,10 +50,10 @@ checkout to be present when Copilot starts the extension.
 | Import suffix | Responsibility | Dependencies within this package |
 | --- | --- | --- |
 | `/diagnostics/operation` | Operation outcomes and opt-in metadata-only debug traces | None |
-| `/diagnostics/trace` | Record evidence around already-awaited operations without waiting for delivery | Internal error-field validation |
+| `/diagnostics/trace` | Record evidence around already-awaited operations without waiting for delivery | Internal context and error-field validation |
 | `/logging/redaction` | Bounded, recursive credential-pattern redaction | None |
 | `/logging/logger` | Allowlisted structured records and injected sinks | Redaction |
-| `/logging/delivery` | Independently bounded delivery queues and destination health | Internal error-field validation |
+| `/logging/delivery` | Independently bounded delivery queues and destination health | Internal context and error-field validation |
 | `/logging/rotating-file` | Size-bounded JSON-lines output and rotation | File lock |
 | `/files/lock` | Exclusive, ownership-checked cooperative file locking | Operation diagnostics |
 | `/files/atomic` | Guarded, atomic single-file text updates | File lock, operation diagnostics |
@@ -118,6 +118,7 @@ import { createLogDelivery } from 'copilot-extension-utils/logging/delivery';
 const delivery = createLogDelivery({
   destinations: [{ name: 'file', write: fileSink }, { name: 'host', write: hostSink }],
   codes: ['EIO', 'ETIMEDOUT', -32603],
+  contextKeys: ['event', 'operationId', 'requestId'],
   onLoss: health => console.error(JSON.stringify({ event: 'log.delivery_loss', health })),
 });
 const trace = createOperationTracer({
@@ -155,7 +156,12 @@ from the admission function. `delivery.getHealth()` reports
 admissions, completed writes, suppression, overflow, failed or uncertain writes,
 errors after a confirmed write, and discarded records separately. It retains
 only the most recent safe failure summary per destination. `codes` adds
-approved string and integer error codes to that summary. Optional `onLoss`
+approved string and integer error codes to that summary. `contextKeys` opts
+in to retaining up to 16 explicitly named fields in `lastFailure.original`.
+For flat records, fields come from the record; for nested records, `fields`
+takes precedence except for an outer `event`. Only bounded label strings,
+finite numbers, and booleans are included. Opt in only to caller-sanitized
+identifiers or other safe context, never raw payloads or errors. Optional `onLoss`
 receives coalesced snapshots outside the operation and sink paths. Use an
 independent destination such as stderr, not a sink on the same queue. A stalled
 loss reporter holds at most one active callback and one pending notification.
