@@ -1,0 +1,10 @@
+{
+  "name": "extension-utils-starter",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": { "extension-utils-starter": "install.mjs" },
+  "files": ["install.mjs", "extension.mjs", "command.mjs"],
+  "dependencies": { "copilot-extension-utils": "0.1.0" },
+  "bundleDependencies": ["copilot-extension-utils"]
+}

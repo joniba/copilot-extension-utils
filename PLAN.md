@@ -2,7 +2,9 @@
 
 Each milestone is independently reviewable. Acceptance is evidence, not merely
 finished code or a passing unit-test count. Future milestones are not started
-automatically. Adopt the utilities in two early consumers before a final adopter.
+automatically. Existing extensions inform the contracts; do not migrate them.
+Prove the remaining capabilities in a fresh, neutral extension before using them
+in new projects. The foundation release and its acceptance evidence still stand.
 
 ## Required gates for every milestone
 
@@ -36,14 +38,17 @@ automatically. Adopt the utilities in two early consumers before a final adopter
 | Milestone | Outcome | Additional acceptance evidence |
 | --- | --- | --- |
 | M1: foundations | Independent logging, diagnostics and guarded file/settings utilities | Node 22 and 24, real cross-process contention, JSONC preservation, dependency-isolated imports, disabled-trace behavior, observable failures, and isolated packed installation |
-| M2: early adoption | Pinned, bundled utility copies in two early consumers | Both installed payloads, existing settings and actual behavior verified; preserve unrelated adaptations and state |
-| M3: installation | Guarded installation, progress and atomic version receipts | Failed preparation cannot advance the receipt; concurrent edits and partial activation report their actual effects in both early consumers |
-| M4: status composition | Ownership-checked, expiring session contributions | Agree a generic protocol; retain the prior renderer; prove expiry and contention in both early consumers |
-| M5: repeated policies | Only proven shared command, lifecycle and notification helpers | Keep each capability separate; prove cancellation boundaries, independent cleanup and acceptance-versus-completion semantics in both early consumers |
-| M6: final adoption | Integrate the final consumer last | Every selected capability already verified in both earlier consumers; repeat all review gates and public privacy approval |
+| Installation | `npx` entry point, guarded file plans and backups, stage progress, doctor and atomic version receipt | Failed preparation or verification cannot advance the receipt; report partial activation and preserve unrelated files |
+| Status composition | Expiring, ownership-checked session contributions and a pure compositor | Retain the prior renderer's text; prove expiry, ownership transfer and contention |
+| Commands and lifecycle | Native slash-command, explicit settings scope, cleanup and owning-session notifications | Prove cancellation, typed fallback, settings precedence, independent cleanup and acceptance versus completion |
+| New-extension validation | Document a minimal extension using the packed utilities | Run real offline `npx` install and doctor in an isolated home; run the installed slash handler against a simulated host using the deployed files, without relying on the checkout or build tree |
 
-M2 requires M1. M3 and M4 require M2 but are independent of each other. M5 uses
-evidence from M2-M4. M6 is gated on verified earlier adoption, not just library tests.
+The three capability tracks may proceed independently, then converge in the
+new-extension validation. No existing extension, installation, or session is
+changed by this plan. The version monitor remains a separate package that reads
+the same receipt contract. Record the validation evidence against the reviewed
+revision. Live Copilot loading, registration, and invocation are separate from
+this gate.
 
 ## Dependency decisions for M1
 
@@ -58,3 +63,19 @@ evidence from M2-M4. M6 is gated on verified earlier adoption, not just library 
 Revisit these decisions at each milestone. Dependency count alone is not a
 correctness argument, and a custom implementation is not preferred merely because
 it is already written.
+
+## Refreshed design decisions
+
+- Preserve verified backups and competing-edit checks. Keep preparation and
+  activation policy with the caller and do not promise a multi-file transaction.
+- Report named installation stages, not spinner ticks or an invented percentage.
+  npm already handles package acquisition and executable selection. Node's
+  `util.parseArgs` covers the fixed installer flags; a general CLI framework
+  such as Commander is useful for a larger CLI but unnecessary here.
+- Use a short, OS-released Windows lock for status publication; the portable
+  file-lock fallback retains its explicit stale-lock policy. Use one owner and
+  expiry per session/provider without prescribing a renderer or app payload.
+- Separate safe operation diagnostics from app state. Do not extract which
+  events, counters or historical reconstruction policies an application uses.
+- Use native command objects and explicitly injected application parsing/menu
+  callbacks. Keep lifecycle and notifications independently importable.

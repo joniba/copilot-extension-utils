@@ -24,10 +24,10 @@ export async function observeOperation(name, options, operation) {
     }
     return result;
   };
-  async function emit(level, suffix, fields = {}) {
+  async function emit(level, suffix, fields = {}, timestamp = new Date().toISOString()) {
     if (level === 'debug' && !debug) return;
     const record = {
-      timestamp: new Date().toISOString(), level, event: `${name}.${suffix}`,
+      timestamp, level, event: `${name}.${suffix}`,
       fields: { operationId, ...sanitize(fields) },
     };
     try {
@@ -43,16 +43,23 @@ export async function observeOperation(name, options, operation) {
       }
     }
   }
-  await emit('debug', 'started');
-  function trace(event, fields = {}) {
+  const startedAt = new Date().toISOString();
+  function trace(event, fields = {}, level = 'debug') {
     if (typeof event !== 'string' || !/^[a-z][a-z0-9._-]{0,63}$/.test(event)) {
       throw new TypeError('Trace event must be a static identifier.');
     }
+    if (level !== 'debug' && level !== 'warn') throw new TypeError('Invalid trace level.');
     if (typeof fields.changed === 'boolean') changed = fields.changed;
-    if (debug && pending.length < 64) pending.push({ event, fields: sanitize(fields) });
+    if (level === 'debug' && !debug) return;
+    if (pending.length === 64 && level === 'warn') {
+      const replace = pending.findIndex(entry => entry.level === 'debug');
+      if (replace !== -1) pending.splice(replace, 1);
+    }
+    if (pending.length < 64) pending.push({ event, level, fields: sanitize(fields) });
   }
   async function flush() {
-    for (const entry of pending) await emit('debug', entry.event, entry.fields);
+    await emit('debug', 'started', {}, startedAt);
+    for (const { event, level, fields } of pending) await emit(level, event, fields);
   }
   let result;
   try {

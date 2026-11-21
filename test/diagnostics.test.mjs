@@ -122,6 +122,23 @@ test('trace metadata is allowlisted and committed changes survive later failure 
   assert.ok(!JSON.stringify(records).includes('private'));
 });
 
+test('atomic replacement remains marked committed after lock release and both diagnostic destinations fail', async t => {
+  const path = join(await fixture(t), 'state.txt');
+  const releaseError = new Error('release failed');
+  const destinationError = new Error('destination failed');
+  const fallbackError = new Error('fallback failed');
+  t.mock.method(console, 'error', () => { throw fallbackError; });
+  await assert.rejects(updateTextFile(path, () => 'committed', {
+    async guard(_, write) { await write(); throw releaseError; },
+    diagnostics: { write() { throw destinationError; } },
+  }), error => error instanceof AggregateError
+    && error.fileCommitted === true
+    && error.errors[0].cause === releaseError
+    && error.errors[1].errors[0] === destinationError
+    && error.errors[1].errors[1] === fallbackError);
+  assert.equal(await readFile(path, 'utf8'), 'committed');
+});
+
 test('structured logger debug output is independently disable-able', async () => {
   const received = [];
   const quiet = createLogger({ fields: [], sinks: [record => received.push(record)] });
