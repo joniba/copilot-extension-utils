@@ -358,6 +358,54 @@ for (const [reported, outcome, counter] of [
   });
 }
 
+test('delivery snapshots the bounded context keys and error codes before destinations initialize', { timeout: 5000 }, async () => {
+  const contextKeys = ['requestId'];
+  const codes = ['EIO'];
+  const additional = Object.fromEntries(Array.from({ length: 16 }, (_, index) => [`extra${index}`, index]));
+  contextKeys[Symbol.iterator] = function* () { yield 'requestId'; yield* Object.keys(additional); };
+  const observed = Promise.withResolvers();
+  const delivery = createLogDelivery({
+    contextKeys,
+    codes,
+    destinations: [{
+      name: 'file',
+      get write() {
+        contextKeys[0] = 'otherId';
+        codes[0] = 'EPERM';
+        return () => { throw Object.assign(new Error('file unavailable'), { code: 'EIO' }); };
+      },
+    }],
+    onLoss: observed.resolve,
+  });
+  try {
+    assert.equal(delivery.submit({ requestId: 'request-1', otherId: 'request-2', ...additional }), 1);
+    const [file] = (await observed.promise).destinations;
+    assert.deepEqual(file.lastFailure.original, { requestId: 'request-1' });
+    assert.equal(file.lastFailure.diagnostic.code, 'EIO');
+  } finally {
+    delivery.close();
+  }
+});
+
+test('the tracer uses the same validated keys and codes even if array elements change on reread', async () => {
+  const contextKeys = ['requestId'];
+  const codes = ['EIO'];
+  let keyReads = 0;
+  let codeReads = 0;
+  Object.defineProperty(contextKeys, 0, { get: () => ++keyReads === 1 ? 'requestId' : 'otherId' });
+  Object.defineProperty(codes, 0, { get: () => ++codeReads === 1 ? 'EIO' : 'EPERM' });
+  const records = [];
+  const tracer = createOperationTracer({ contextKeys, codes, debug: true, submit: record => records.push(record) });
+  const failure = Object.assign(new Error('request failed'), { code: 'EIO' });
+  await assert.rejects(
+    tracer.run('request.send', () => { throw failure; }, { requestId: 'request-1', otherId: 'request-2' }),
+    error => error === failure,
+  );
+  assert.deepEqual(records.map(record => record.fields.requestId), ['request-1', 'request-1']);
+  assert.ok(records.every(record => !Object.hasOwn(record.fields, 'otherId')));
+  assert.equal(records[1].fields.code, 'EIO');
+});
+
 test('lazy destination error fields cannot enqueue back into the same destination', { timeout: 5000 }, async () => {
   const observed = Promise.withResolvers();
   const seen = [];

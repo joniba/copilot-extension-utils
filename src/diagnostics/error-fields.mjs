@@ -2,8 +2,14 @@ const errorTypes = new Set([
   'Error', 'TypeError', 'SyntaxError', 'RangeError', 'ReferenceError', 'ResponseError', 'AbortError', 'AggregateError',
 ]);
 
-export const isErrorCode = code => Number.isSafeInteger(code)
+const isErrorCode = code => Number.isSafeInteger(code)
   || (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code));
+
+export function snapshotErrorCodes(codes) {
+  if (!Array.isArray(codes)) return null;
+  const snapshot = Array.from(codes);
+  return snapshot.every(isErrorCode) ? new Set(snapshot) : null;
+}
 
 export function errorField(object, key) {
   try { return object?.[key]; } catch { return undefined; }

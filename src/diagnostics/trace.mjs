@@ -1,19 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { isContextValue, validContextKeys } from './context-fields.mjs';
-import { isCancellation, isErrorCode, summarizeError } from './error-fields.mjs';
+import { isContextValue, snapshotContextKeys } from './context-fields.mjs';
+import { isCancellation, snapshotErrorCodes, summarizeError } from './error-fields.mjs';
 
 const namePattern = /^[a-z][a-z0-9._-]{0,111}$/;
 const reserved = new Set(['operationId', 'durationMs', 'code', 'errorType']);
 const count = value => Math.min(value + 1, Number.MAX_SAFE_INTEGER);
 
 export function createOperationTracer({ submit, debug = false, codes = [], contextKeys = [] }) {
-  if (typeof submit !== 'function' || typeof debug !== 'boolean' || !Array.isArray(codes)
-    || !Array.from(codes).every(isErrorCode)
-    || !validContextKeys(contextKeys, reserved)) {
+  const allowedKeys = snapshotContextKeys(contextKeys, reserved);
+  const acceptedCodes = snapshotErrorCodes(codes);
+  if (typeof submit !== 'function' || typeof debug !== 'boolean' || !acceptedCodes || !allowedKeys) {
     throw new TypeError('Invalid operation tracer options.');
   }
-  const acceptedCodes = new Set(codes);
-  const allowedKeys = new Set(contextKeys);
   let admissionFailures = 0;
   let submitting = false;
 

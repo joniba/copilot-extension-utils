@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isContextValue, validContextKeys } from '../diagnostics/context-fields.mjs';
-import { errorField, isErrorCode, safeRecordedError, summarizeError } from '../diagnostics/error-fields.mjs';
+import { isContextValue, snapshotContextKeys } from '../diagnostics/context-fields.mjs';
+import { errorField, safeRecordedError, snapshotErrorCodes, summarizeError } from '../diagnostics/error-fields.mjs';
 
 const validName = name => typeof name === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(name);
 const increment = (value, amount = 1) => Math.min(value + amount, Number.MAX_SAFE_INTEGER);
@@ -22,11 +22,13 @@ export function createLogDelivery({
   destinations, capacity = 64, maxRecordBytes = 16_384, maxPendingBytes = 1_048_576,
   suppressionMs = 0, suppressionKeys = 32, codes = [], contextKeys = [], onLoss,
 }) {
+  const allowedContext = snapshotContextKeys(contextKeys, reservedContext);
+  const acceptedCodes = snapshotErrorCodes(codes);
   if (!Array.isArray(destinations) || destinations.length < 1 || destinations.length > 16
     || !integer(capacity, 1, 1024) || !integer(maxRecordBytes, 1, 65_536)
     || !integer(maxPendingBytes, 1, 16_777_216)
     || !integer(suppressionMs, 0, 86_400_000) || !integer(suppressionKeys, 1, 1024)
-    || !Array.isArray(codes) || !Array.from(codes).every(isErrorCode) || !validContextKeys(contextKeys, reservedContext)
+    || !acceptedCodes || !allowedContext
     || (onLoss !== undefined && typeof onLoss !== 'function')) {
     throw new TypeError('Invalid log delivery options.');
   }
@@ -42,8 +44,6 @@ export function createLogDelivery({
     };
   });
   const writers = new AsyncLocalStorage();
-  const acceptedCodes = new Set(codes);
-  const allowedContext = new Set(contextKeys);
   let closed = false;
   let invalid = 0;
   let reentrant = 0;
