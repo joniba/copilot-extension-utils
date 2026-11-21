@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isErrorCode, summarizeError } from './error-fields.mjs';
+import { isCancellation, isErrorCode, summarizeError } from './error-fields.mjs';
 
 const namePattern = /^[a-z][a-z0-9._-]{0,111}$/;
 const keyPattern = /^[a-z][A-Za-z0-9]{0,63}$/;
@@ -32,7 +32,8 @@ export function createOperationTracer({ submit, debug = false, codes = [], conte
         fields: { ...context, operationId, ...duration, ...details },
       });
       // An accidentally asynchronous reporter still cannot create an unhandled rejection.
-      if (typeof submitted?.then === 'function') {
+      if (submitted === 0) admissionFailures = count(admissionFailures);
+      else if (typeof submitted?.then === 'function') {
         Promise.resolve(submitted).catch(() => { admissionFailures = count(admissionFailures); });
       }
     } catch {
@@ -71,7 +72,7 @@ export function createOperationTracer({ submit, debug = false, codes = [], conte
         return result;
       } catch (error) {
         const details = summarizeError(error, acceptedCodes);
-        const cancelled = details.errorType === 'AbortError' || details.code === 'ABORT_ERR';
+        const cancelled = isCancellation(error);
         record(name, cancelled ? 'cancelled' : 'failed', cancelled ? 'warn' : 'error', operationId, values, start, details);
         throw error;
       }

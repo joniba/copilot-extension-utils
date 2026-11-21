@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { createOperationTracer } from 'copilot-extension-utils/diagnostics/trace';
 import { createLogDelivery } from 'copilot-extension-utils/logging/delivery';
+import { fixture } from './helpers.mjs';
 
 test('start evidence reaches a destination while the traced operation is still pending', { timeout: 5000 }, async () => {
   const entered = Promise.withResolvers();
@@ -42,11 +47,14 @@ test('quiet tracing preserves safe integer codes, raw error identity and cancell
   const inner = Object.assign(new Error('private content'), { code: -32603 });
   const error = new Error('private wrapper', { cause: inner });
   const cancelled = Object.assign(new Error('private abort'), { name: 'AbortError' });
+  const codedAbort = new Error('wrapped', { cause: Object.assign(new Error('private cancel'), { code: 'ABORT_ERR' }) });
   assert.equal(await tracer.run('request.send', () => 42), 42);
   await assert.rejects(tracer.run('request.send', () => { throw error; }), reason => reason === error);
   await assert.rejects(tracer.run('request.send', () => Promise.reject(cancelled)), reason => reason === cancelled);
+  await assert.rejects(tracer.run('request.send', () => Promise.reject(codedAbort)), reason => reason === codedAbort);
   assert.deepEqual(records.map(record => [record.event, record.level, record.fields.code]), [
     ['request.send.failed', 'error', -32603],
+    ['request.send.cancelled', 'warn', 'UNKNOWN'],
     ['request.send.cancelled', 'warn', 'UNKNOWN'],
   ]);
   assert.ok(!JSON.stringify(records).includes('private'));
@@ -80,7 +88,44 @@ test('throwing admission, bad context, and closed delivery cannot change a trace
   delivery.close();
   const closed = createOperationTracer({ submit: delivery.submit, debug: true });
   assert.equal(await closed.run('worker.run', () => result), result);
+  assert.equal(closed.getHealth().admissionFailures, 2);
   assert.equal(delivery.getHealth().afterClose, 2);
+});
+
+test('closing delivery lets a process exit naturally while the log lock is contended', { timeout: 8000 }, async t => {
+  const path = join(await fixture(t), 'debug.jsonl');
+  await writeFile(`${path}.lock`, 'other writer');
+  const { stdout } = await promisify(execFile)(process.execPath, [
+    '--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs/promises';
+    import { createLogDelivery } from 'copilot-extension-utils/logging/delivery';
+    import { createRotatingFileSink } from 'copilot-extension-utils/logging/rotating-file';
+    const path = ${JSON.stringify(path)};
+    const delivery = createLogDelivery({
+      destinations: [{ name: 'file', write: createRotatingFileSink({ path, separatePartialLine: true }) }],
+    });
+    const open = fs.open;
+    fs.open = async (...args) => {
+      try {
+        return await open(...args);
+      } catch (error) {
+        if (args[0] === path + '.lock' && error.code === 'EEXIST') {
+          setImmediate(() => {
+            assert.equal(delivery.getHealth().destinations[0].active, true);
+            delivery.close();
+            console.log('closed');
+          });
+        }
+        throw error;
+      }
+    };
+    delivery.submit({ event: 'test' });
+    `,
+  ], { cwd: new URL('../', import.meta.url), windowsHide: true, timeout: 4000 });
+  assert.equal(stdout.trim(), 'closed');
+  assert.equal(await readFile(`${path}.lock`, 'utf8'), 'other writer');
+  await assert.rejects(readFile(path), { code: 'ENOENT' });
 });
 
 test('a pending writer stays bounded and cannot stall another destination or close', { timeout: 5000 }, async () => {
@@ -223,6 +268,35 @@ test('a rejected write with confirmed bytes counts as delivered without replay',
   delivery.close();
 });
 
+test('lazy destination error fields cannot enqueue back into the same destination', { timeout: 5000 }, async () => {
+  const observed = Promise.withResolvers();
+  const seen = [];
+  let accepted;
+  const delivery = createLogDelivery({
+    codes: ['EIO'],
+    destinations: [{ name: 'file', write(record) {
+      seen.push(record.event);
+      if (record.event === 'first') {
+        throw Object.defineProperty(new Error('destination failed'), 'code', {
+          get() {
+            accepted = delivery.submit({ event: 'feedback' });
+            return 'EIO';
+          },
+        });
+      }
+    } }],
+    onLoss: observed.resolve,
+  });
+  delivery.submit({ event: 'first' });
+  const health = await observed.promise;
+  assert.equal(accepted, 0);
+  assert.equal(health.reentrant, 1);
+  assert.equal(health.destinations[0].lastFailure.diagnostic.code, 'EIO');
+  await setImmediate();
+  assert.deepEqual(seen, ['first']);
+  delivery.close();
+});
+
 test('a stalled loss reporter coalesces later losses without holding up delivery or close', { timeout: 5000 }, async () => {
   const hold = Promise.withResolvers();
   const firstReport = Promise.withResolvers();
@@ -250,6 +324,9 @@ test('a stalled loss reporter coalesces later losses without holding up delivery
     delivery.close();
     assert.equal(reports.length, 1);
     hold.resolve();
+    // Give the unreferenced shutdown report a turn without keeping production alive.
+    await setImmediate();
+    await setImmediate();
     const health = await finalReport.promise;
     assert.equal(health.closed, true);
     assert.equal(health.invalid, 21);

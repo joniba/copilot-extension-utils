@@ -150,7 +150,8 @@ duplicates, configure `suppressionMs` and pass a stable
 destination acknowledges a preceding record with the same key; failed writes are
 not retried. Include any distinctions that must not be suppressed in the key.
 
-`trace.getHealth()` reports admission failures. `delivery.getHealth()` reports
+`trace.getHealth()` reports admission failures, including an explicit zero
+from the admission function. `delivery.getHealth()` reports
 admissions, completed writes, suppression, overflow, failed or uncertain writes,
 errors after a confirmed write, and discarded records separately. It retains
 only the most recent safe failure summary per destination. `codes` adds
@@ -159,7 +160,10 @@ receives coalesced snapshots outside the operation and sink paths. Use an
 independent destination such as stderr, not a sink on the same queue. A stalled
 loss reporter holds at most one active callback and one pending notification.
 `delivery.close()` discards queued records, refuses new ones, and does not wait
-for writes already in flight or for the loss reporter.
+for writes already in flight or for the loss reporter. The optional rotator's
+lock retry timer does not keep the process alive; an open, already-started
+file write still gets its ordinary cleanup. Delivery cannot cancel work inside
+a caller-supplied destination.
 
 For recoverable JSON-lines files, pass `separatePartialLine: true` to
 `createRotatingFileSink`. A later append starts on a new line without removing

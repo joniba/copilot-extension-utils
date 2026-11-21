@@ -14,24 +14,30 @@ async function size(path) {
   return info.size;
 }
 
-async function endsWithNewline(path, bytes) {
-  const file = await open(path, 'r');
+async function withLogHandle(path, flags, operation) {
+  const file = await open(path, flags, 0o600);
   let failure;
   try {
-    const tail = Buffer.alloc(1);
-    const { bytesRead } = await file.read(tail, 0, 1, bytes - 1);
-    if (bytesRead !== 1) throw Object.assign(new Error('The log changed while reading its tail.'), { code: 'ERR_LOG_CHANGED' });
-    return tail[0] === 10;
+    return await operation(file);
   } catch (error) {
-    failure = error;
+    failure = { error };
     throw error;
   } finally {
     try { await file.close(); }
     catch (error) {
-      if (failure) throw new AggregateError([failure, error], 'Log tail read and close both failed.');
+      if (failure) throw new AggregateError([failure.error, error], 'Log file operation and close both failed.');
       throw error;
     }
   }
+}
+
+function endsWithNewline(path, bytes) {
+  return withLogHandle(path, 'r', async file => {
+    const tail = Buffer.alloc(1);
+    const { bytesRead } = await file.read(tail, 0, 1, bytes - 1);
+    if (bytesRead !== 1) throw Object.assign(new Error('The log changed while reading its tail.'), { code: 'ERR_LOG_CHANGED' });
+    return tail[0] === 10;
+  });
 }
 
 export function createRotatingFileSink({ path, maxBytes = 2 * 1024 * 1024, backups = 3, separatePartialLine = false }) {
@@ -65,10 +71,16 @@ export function createRotatingFileSink({ path, maxBytes = 2 * 1024 * 1024, backu
               }
             }
           }
-          deliveryOutcome = 'uncertain';
-          await appendFile(path, `${separator}${line}`, { encoding: 'utf8', mode: 0o600 });
-          deliveryOutcome = 'written';
-        }, separatePartialLine ? { diagnostics: { write() {} } } : undefined);
+          if (separatePartialLine) {
+            await withLogHandle(path, 'a', async file => {
+              deliveryOutcome = 'uncertain';
+              await file.appendFile(`${separator}${line}`, 'utf8');
+              deliveryOutcome = 'written';
+            });
+          } else {
+            await appendFile(path, line, { encoding: 'utf8', mode: 0o600 });
+          }
+        }, separatePartialLine ? { diagnostics: { write() {} }, retryRef: false } : undefined);
       } catch (cause) {
         if (!separatePartialLine) throw cause;
         throw Object.assign(new Error('Log write or lock cleanup failed.', { cause }), { deliveryOutcome });

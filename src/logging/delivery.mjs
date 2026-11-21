@@ -24,7 +24,7 @@ export function createLogDelivery({
     }
     names.add(name);
     return {
-      name, write, queue: [], pendingBytes: 0, recent: new Map(), scheduled: false, active: false,
+      name, write, queue: [], pendingBytes: 0, recent: new Map(), immediate: null, active: false,
       queued: 0, delivered: 0, suppressed: 0, overflow: 0, failed: 0, uncertain: 0, postDeliveryFailures: 0, discarded: 0,
     };
   });
@@ -35,7 +35,7 @@ export function createLogDelivery({
   let reentrant = 0;
   let afterClose = 0;
   let formatting = false;
-  let lossScheduled = false;
+  let lossImmediate;
   let lossActive = false;
   let lossPending = false;
   let lossReportFailures = 0;
@@ -43,10 +43,9 @@ export function createLogDelivery({
   function reportLoss() {
     if (!onLoss) return;
     lossPending = true;
-    if (lossScheduled || lossActive) return;
-    lossScheduled = true;
-    setImmediate(async () => {
-      lossScheduled = false;
+    if (lossImmediate || lossActive) return;
+    lossImmediate = setImmediate(async () => {
+      lossImmediate = undefined;
       lossActive = true;
       lossPending = false;
       try {
@@ -58,6 +57,7 @@ export function createLogDelivery({
         if (lossPending) reportLoss();
       }
     });
+    if (closed) lossImmediate.unref();
   }
 
   function markDelivered(sink, key) {
@@ -83,11 +83,9 @@ export function createLogDelivery({
   }
 
   function schedule(sink) {
-    if (sink.scheduled || sink.active || !sink.queue.length) return;
-    sink.scheduled = true;
-    setImmediate(() => {
-      sink.scheduled = false;
-      if (closed) return;
+    if (closed || sink.immediate || sink.active || !sink.queue.length) return;
+    sink.immediate = setImmediate(() => {
+      sink.immediate = null;
       const { encoded, key, bytes } = sink.queue.shift();
       sink.pendingBytes -= bytes;
       const now = performance.now();
@@ -99,9 +97,11 @@ export function createLogDelivery({
       sink.active = true;
       const record = JSON.parse(encoded);
       const original = safeRecordedError(record.fields ?? record, acceptedCodes);
-      Promise.resolve().then(() => writers.run(true, async () => sink.write(record))).then(
-        () => markDelivered(sink, key),
-        error => {
+      void writers.run(true, async () => {
+        try {
+          await sink.write(record);
+          markDelivered(sink, key);
+        } catch (error) {
           const reported = errorField(error, 'deliveryOutcome');
           const outcome = reported === 'written' || reported === 'uncertain' ? reported : 'failed';
           if (outcome === 'written') {
@@ -112,8 +112,8 @@ export function createLogDelivery({
           }
           sink.lastFailure = { outcome, ...(original && { original }), diagnostic: summarizeError(error, acceptedCodes) };
           reportLoss();
-        },
-      ).finally(() => {
+        }
+      }).finally(() => {
         sink.active = false;
         schedule(sink);
       });
@@ -174,7 +174,10 @@ export function createLogDelivery({
     close() {
       if (closed) return;
       closed = true;
+      lossImmediate?.unref();
       for (const sink of sinks) {
+        clearImmediate(sink.immediate);
+        sink.immediate = null;
         if (sink.queue.length) reportLoss();
         sink.discarded = increment(sink.discarded, sink.queue.length);
         sink.queue.length = 0;

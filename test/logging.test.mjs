@@ -149,17 +149,24 @@ test('oversized or unserializable records fail without changing existing logs', 
 
 test('partial appends retain their bytes and later records remain independently readable', async t => {
   const path = join(await fixture(t), 'debug.jsonl');
-  const append = fs.appendFile;
+  const open = fs.open;
   const fail = new Error('append interrupted');
   const fragment = '{"partial"';
   let failed = false;
-  const shim = t.mock.method(fs, 'appendFile', async (target, content, options) => {
-    if (!failed && content.includes('"partial"')) {
-      failed = true;
-      await append(target, fragment, options);
-      throw fail;
+  const shim = t.mock.method(fs, 'open', async (...args) => {
+    const handle = await open(...args);
+    if (args[0] === path && args[1] === 'a') {
+      const append = handle.appendFile.bind(handle);
+      t.mock.method(handle, 'appendFile', async (content, options) => {
+        if (!failed && content.includes('"partial"')) {
+          failed = true;
+          await append(fragment, options);
+          throw fail;
+        }
+        return append(content, options);
+      });
     }
-    return append(target, content, options);
+    return handle;
   });
   syncBuiltinESMExports();
   t.after(() => {
@@ -175,6 +182,25 @@ test('partial appends retain their bytes and later records remain independently 
   assert.deepEqual(JSON.parse(first), { first: 1 });
   assert.equal(broken, fragment);
   assert.deepEqual(JSON.parse(next), { next: 3 });
+});
+
+test('a file-open failure is known not to have written any log bytes', async t => {
+  const path = join(await fixture(t), 'debug.jsonl');
+  const open = fs.open;
+  const failure = Object.assign(new Error('file could not open'), { code: 'EMFILE' });
+  const shim = t.mock.method(fs, 'open', (...args) => {
+    if (args[0] === path && args[1] === 'a') throw failure;
+    return open(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    shim.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const sink = createRotatingFileSink({ path, separatePartialLine: true });
+  await assert.rejects(sink({ seq: 1 }), error =>
+    error.deliveryOutcome === 'not-written' && error.cause === failure);
+  await assert.rejects(stat(path), { code: 'ENOENT' });
 });
 
 test('a separator that would exceed the cap rotates without rewriting the uncertain tail', async t => {

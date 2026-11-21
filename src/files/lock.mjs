@@ -9,7 +9,7 @@ export async function withFileLock(path, operation, { diagnostics, ...options } 
 }
 
 async function runWithLock(path, operation, {
-  timeoutMs = 5000, retryMs = 25, signal,
+  timeoutMs = 5000, retryMs = 25, signal, retryRef = true,
 }, trace) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('Lock path must be absolute.');
   if (typeof operation !== 'function') throw new TypeError('Lock operation must be a function.');
@@ -33,7 +33,7 @@ async function runWithLock(path, operation, {
       if (remaining <= 0) {
         throw Object.assign(new Error(`Lock acquisition timed out: ${path}`, { cause: error }), { code: 'ERR_LOCK_TIMEOUT' });
       }
-      await delay(Math.min(retryMs, remaining), undefined, { signal });
+      await delay(Math.min(retryMs, remaining), undefined, { signal, ref: retryRef !== false });
     }
   }
   try {

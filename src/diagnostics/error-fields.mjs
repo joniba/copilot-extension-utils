@@ -9,6 +9,13 @@ export function errorField(object, key) {
   try { return object?.[key]; } catch { return undefined; }
 }
 
+export function isCancellation(error) {
+  for (let depth = 0, cause = error; depth < 8 && cause != null; depth++, cause = errorField(cause, 'cause')) {
+    if (errorField(cause, 'name') === 'AbortError' || errorField(cause, 'code') === 'ABORT_ERR') return true;
+  }
+  return false;
+}
+
 export function summarizeError(error, codes) {
   const type = errorField(error, 'name');
   let code = 'UNKNOWN';
