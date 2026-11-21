@@ -146,3 +146,58 @@ test('oversized or unserializable records fail without changing existing logs', 
   assert.equal(await readFile(path, 'utf8'), 'original\n');
   assert.deepEqual(await readdir(directory), ['debug.jsonl']);
 });
+
+test('partial appends retain their bytes and later records remain independently readable', async t => {
+  const path = join(await fixture(t), 'debug.jsonl');
+  const append = fs.appendFile;
+  const fail = new Error('append interrupted');
+  const fragment = '{"partial"';
+  let failed = false;
+  const shim = t.mock.method(fs, 'appendFile', async (target, content, options) => {
+    if (!failed && content.includes('"partial"')) {
+      failed = true;
+      await append(target, fragment, options);
+      throw fail;
+    }
+    return append(target, content, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    shim.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const sink = createRotatingFileSink({ path, maxBytes: 100, separatePartialLine: true });
+  const successor = createRotatingFileSink({ path, maxBytes: 100, separatePartialLine: true });
+  await sink({ first: 1 });
+  await assert.rejects(sink({ partial: 2 }), error => error.deliveryOutcome === 'uncertain' && error.cause === fail);
+  await successor({ next: 3 });
+  const [first, broken, next] = (await readFile(path, 'utf8')).trimEnd().split('\n');
+  assert.deepEqual(JSON.parse(first), { first: 1 });
+  assert.equal(broken, fragment);
+  assert.deepEqual(JSON.parse(next), { next: 3 });
+});
+
+test('a separator that would exceed the cap rotates without rewriting the uncertain tail', async t => {
+  const path = join(await fixture(t), 'debug.jsonl');
+  const fragment = '{"partial"';
+  const next = { next: 1 };
+  const maxBytes = Buffer.byteLength(`${fragment}${JSON.stringify(next)}\n`);
+  await writeFile(path, fragment);
+  await createRotatingFileSink({ path, maxBytes, separatePartialLine: true })(next);
+  assert.equal(await readFile(`${path}.1`, 'utf8'), fragment);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), next);
+});
+
+test('append completion is distinguishable from a subsequent lock release failure', async t => {
+  const path = join(await fixture(t), 'debug.jsonl');
+  const failure = new Error('lock release failed');
+  const unlink = fs.unlink;
+  t.mock.method(fs, 'unlink', async target => {
+    if (target === `${path}.lock`) throw failure;
+    return unlink(target);
+  });
+  const expected = { event: 'write.completed' };
+  const sink = createRotatingFileSink({ path, separatePartialLine: true });
+  await assert.rejects(sink(expected), error => error.deliveryOutcome === 'written' && error.cause === failure);
+  assert.equal(await readFile(path, 'utf8'), `${JSON.stringify(expected)}\n`);
+});

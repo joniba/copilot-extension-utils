@@ -66,3 +66,10 @@ test('host helpers and pure status and settings policies do not load installer o
     await import('copilot-extension-utils/settings/scope');
   `, ['/install/', '/files/', '/logging/', '/jsonc-parser/', 'node:fs', 'node:net']);
 });
+
+test('the nonblocking tracer and delivery can be imported independently', async () => {
+  await isolated(`await import('copilot-extension-utils/diagnostics/trace');`,
+    ['/logging/', '/settings/', 'node:fs', '@github/copilot-sdk']);
+  await isolated(`await import('copilot-extension-utils/logging/delivery');`,
+    ['/diagnostics/trace', '/diagnostics/operation', '/settings/', 'node:fs', '@github/copilot-sdk']);
+});

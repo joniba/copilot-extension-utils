@@ -50,8 +50,10 @@ checkout to be present when Copilot starts the extension.
 | Import suffix | Responsibility | Dependencies within this package |
 | --- | --- | --- |
 | `/diagnostics/operation` | Operation outcomes and opt-in metadata-only debug traces | None |
+| `/diagnostics/trace` | Record evidence around already-awaited operations without waiting for delivery | Internal error-field validation |
 | `/logging/redaction` | Bounded, recursive credential-pattern redaction | None |
 | `/logging/logger` | Allowlisted structured records and injected sinks | Redaction |
+| `/logging/delivery` | Independently bounded delivery queues and destination health | Internal error-field validation |
 | `/logging/rotating-file` | Size-bounded JSON-lines output and rotation | File lock |
 | `/files/lock` | Exclusive, ownership-checked cooperative file locking | Operation diagnostics |
 | `/files/atomic` | Guarded, atomic single-file text updates | File lock, operation diagnostics |
@@ -106,6 +108,68 @@ on systems with restrictive file sharing. Separate writers use the same lock.
 Each sink queues its calls in order instead of polling its own lock concurrently.
 A failed write rejects its caller without preventing subsequent queued writes.
 The caller owns the log path, its numbered backups, and its `.lock` path.
+
+### Diagnostics that do not wait for log delivery
+
+```js
+import { createOperationTracer } from 'copilot-extension-utils/diagnostics/trace';
+import { createLogDelivery } from 'copilot-extension-utils/logging/delivery';
+
+const delivery = createLogDelivery({
+  destinations: [{ name: 'file', write: fileSink }, { name: 'host', write: hostSink }],
+  codes: ['EIO', 'ETIMEDOUT', -32603],
+  onLoss: health => console.error(JSON.stringify({ event: 'log.delivery_loss', health })),
+});
+const trace = createOperationTracer({
+  submit: delivery.submit,
+  debug: true,
+  contextKeys: ['requestId'],
+  codes: ['ETIMEDOUT', -32603],
+});
+
+const result = await trace.run('request.send', () => sendRequest(), { requestId });
+```
+
+The tracer is for operations the extension already awaits. Debug-enabled starts
+are submitted before calling the operation; completion and elapsed time follow
+when it settles. Errors and aborts remain observable with debug off. The caller
+gets the original value or thrown/rejected value. Only selected scalar context
+fields and allowlisted string or integer codes are included. Do not whitelist
+payloads, secrets, paths, or other sensitive data.
+
+Supply a synchronous admission function to the tracer, not a sink. Delivery
+accepts already-sanitized JSON records, copies them at admission, and reports the
+number of destinations that queued them. Each destination processes its own
+queue with one active write. The default bounds are 64 waiting records,
+16 KiB per encoded record, and 1 MiB of encoded records waiting per destination.
+An asynchronously stalled writer doesn't delay other destinations. These queues
+cannot isolate a callback that blocks the JavaScript thread synchronously.
+Delivery reports sink completion, not power-loss durability. To suppress
+duplicates, configure `suppressionMs` and pass a stable
+`{ suppressionKey }` to `submit`. Suppression applies only after that
+destination acknowledges a preceding record with the same key; failed writes are
+not retried. Include any distinctions that must not be suppressed in the key.
+
+`trace.getHealth()` reports admission failures. `delivery.getHealth()` reports
+admissions, completed writes, suppression, overflow, failed or uncertain writes,
+errors after a confirmed write, and discarded records separately. It retains
+only the most recent safe failure summary per destination. `codes` adds
+approved string and integer error codes to that summary. Optional `onLoss`
+receives coalesced snapshots outside the operation and sink paths. Use an
+independent destination such as stderr, not a sink on the same queue. A stalled
+loss reporter holds at most one active callback and one pending notification.
+`delivery.close()` discards queued records, refuses new ones, and does not wait
+for writes already in flight or for the loss reporter.
+
+For recoverable JSON-lines files, pass `separatePartialLine: true` to
+`createRotatingFileSink`. A later append starts on a new line without removing
+an uncertain tail, or rotates first if the record and separator do not fit.
+Readers should parse lines independently and report malformed ones. The sink
+reports failure before append, uncertain append, and failure after confirmed
+append separately; it does not retry or change normal retention.
+
+This is an opt-in alternative; existing `observeOperation` and `createLogger`
+still await their configured destinations.
 
 ## Files and settings
 

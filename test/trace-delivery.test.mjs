@@ -1,0 +1,262 @@
+import assert from 'node:assert/strict';
+import { setImmediate } from 'node:timers/promises';
+import test from 'node:test';
+import { createOperationTracer } from 'copilot-extension-utils/diagnostics/trace';
+import { createLogDelivery } from 'copilot-extension-utils/logging/delivery';
+
+test('start evidence reaches a destination while the traced operation is still pending', { timeout: 5000 }, async () => {
+  const entered = Promise.withResolvers();
+  const start = Promise.withResolvers();
+  const end = Promise.withResolvers();
+  const operation = Promise.withResolvers();
+  const delivery = createLogDelivery({ destinations: [{
+    name: 'file',
+    write(record) { (record.event.endsWith('.started') ? start : end).resolve(record); },
+  }] });
+  const tracer = createOperationTracer({ submit: delivery.submit, debug: true, contextKeys: ['requestId'] });
+  const running = tracer.run('request.send', () => {
+    entered.resolve();
+    return operation.promise;
+  }, { requestId: 'r-1', body: 'not recorded' });
+  await entered.promise;
+  const started = await start.promise;
+  assert.equal(started.event, 'request.send.started');
+  assert.equal(started.fields.requestId, 'r-1');
+  assert.equal(started.fields.body, undefined);
+  const result = {};
+  operation.resolve(result);
+  assert.equal(await running, result);
+  const completed = await end.promise;
+  assert.equal(completed.event, 'request.send.completed');
+  assert.equal(completed.fields.operationId, started.fields.operationId);
+  assert.ok(completed.fields.durationMs >= 0);
+  delivery.close();
+});
+
+test('quiet tracing preserves safe integer codes, raw error identity and cancellation', async () => {
+  const records = [];
+  const tracer = createOperationTracer({
+    submit: record => records.push(record),
+    codes: [-32603, 'EIO'],
+  });
+  const inner = Object.assign(new Error('private content'), { code: -32603 });
+  const error = new Error('private wrapper', { cause: inner });
+  const cancelled = Object.assign(new Error('private abort'), { name: 'AbortError' });
+  assert.equal(await tracer.run('request.send', () => 42), 42);
+  await assert.rejects(tracer.run('request.send', () => { throw error; }), reason => reason === error);
+  await assert.rejects(tracer.run('request.send', () => Promise.reject(cancelled)), reason => reason === cancelled);
+  assert.deepEqual(records.map(record => [record.event, record.level, record.fields.code]), [
+    ['request.send.failed', 'error', -32603],
+    ['request.send.cancelled', 'warn', 'UNKNOWN'],
+  ]);
+  assert.ok(!JSON.stringify(records).includes('private'));
+});
+
+test('a malformed diagnostic error cannot replace the original rejection', async () => {
+  const tracer = createOperationTracer({ submit() {} });
+  const malformed = { name: 'AggregateError', errors: { length: Symbol() } };
+  await assert.rejects(tracer.run('worker.run', () => Promise.reject(malformed)), error => error === malformed);
+});
+
+test('throwing admission, bad context, and closed delivery cannot change a traced result', async () => {
+  const result = {};
+  const failure = {};
+  const tracer = createOperationTracer({
+    debug: true, contextKeys: ['requestId'],
+    submit() { throw new Error('reporter failed'); },
+  });
+  assert.equal(await tracer.run('worker.run', () => result), result);
+  await assert.rejects(tracer.run('worker.run', () => Promise.reject(failure)), reason => reason === failure);
+  const context = { get requestId() { throw new Error('context failed'); } };
+  assert.equal(await tracer.run('worker.run', () => result, context), result);
+  assert.equal(tracer.getHealth().admissionFailures, 5);
+
+  const asynchronous = createOperationTracer({ debug: true, async submit() { throw new Error('reporter failed'); } });
+  assert.equal(await asynchronous.run('worker.run', () => result), result);
+  await setImmediate();
+  assert.equal(asynchronous.getHealth().admissionFailures, 2);
+
+  const delivery = createLogDelivery({ destinations: [{ name: 'file', write: () => assert.fail() }] });
+  delivery.close();
+  const closed = createOperationTracer({ submit: delivery.submit, debug: true });
+  assert.equal(await closed.run('worker.run', () => result), result);
+  assert.equal(delivery.getHealth().afterClose, 2);
+});
+
+test('a pending writer stays bounded and cannot stall another destination or close', { timeout: 5000 }, async () => {
+  const hold = Promise.withResolvers();
+  const seen = [];
+  const received = [Promise.withResolvers(), Promise.withResolvers(), Promise.withResolvers()];
+  const delivery = createLogDelivery({
+    capacity: 1,
+    destinations: [
+      { name: 'slow', write: () => hold.promise },
+      { name: 'fast', write: record => { seen.push(record.value); received[record.value - 1].resolve(); } },
+    ],
+  });
+  try {
+    const record = { value: 1 };
+    assert.equal(delivery.submit(record), 2);
+    record.value = 99;
+    assert.deepEqual(delivery.getHealth().destinations.map(sink => sink.delivered), [0, 0]);
+    await received[0].promise;
+    assert.equal(delivery.submit({ value: 2 }), 2);
+    await received[1].promise;
+    assert.equal(delivery.submit({ value: 3 }), 1);
+    await received[2].promise;
+    await setImmediate();
+    assert.deepEqual(seen, [1, 2, 3]);
+    const [slow, fast] = delivery.getHealth().destinations;
+    assert.equal(slow.active, true);
+    assert.equal(slow.pending, 1);
+    assert.equal(slow.overflow, 1);
+    assert.equal(fast.delivered, 3);
+    delivery.close();
+    assert.equal(delivery.getHealth().destinations[0].discarded, 1);
+    assert.equal(delivery.getHealth().destinations[0].active, true);
+  } finally {
+    delivery.close();
+    hold.resolve();
+  }
+});
+
+test('a failed write is not retried or suppressed; suppression begins only after successful delivery', { timeout: 5000 }, async () => {
+  const secondWrite = Promise.withResolvers();
+  const thirdWrite = Promise.withResolvers();
+  const seen = [];
+  const delivery = createLogDelivery({
+    suppressionMs: 60_000,
+    destinations: [{ name: 'file', write({ seq }) {
+      seen.push(seq);
+      if (seq === 1) throw new Error('append outcome unknown');
+      if (seq === 2) secondWrite.resolve();
+      if (seq === 4) thirdWrite.resolve();
+    } }],
+  });
+  for (const seq of [1, 2, 3]) delivery.submit({ seq }, { suppressionKey: 'same' });
+  await secondWrite.promise;
+  delivery.submit({ seq: 4 }, { suppressionKey: 'different' });
+  await thirdWrite.promise;
+  await setImmediate();
+  assert.deepEqual(seen, [1, 2, 4]);
+  const [file] = delivery.getHealth().destinations;
+  assert.equal(file.failed, 1);
+  assert.equal(file.suppressed, 1);
+  assert.equal(file.delivered, 2);
+  delivery.close();
+});
+
+test('invalid record formatting and recursive delivery are counted outside the destination', { timeout: 5000 }, async () => {
+  const received = Promise.withResolvers();
+  const delivery = createLogDelivery({
+    maxRecordBytes: 64,
+    destinations: [{ name: 'file', async write() {
+      await setImmediate();
+      assert.equal(delivery.submit({ nested: true }), 0);
+      received.resolve();
+    } }],
+  });
+  const invalid = { toJSON() { throw new Error('formatting failed'); } };
+  assert.equal(delivery.submit(invalid), 0);
+  assert.equal(delivery.submit({ long: 'x'.repeat(100) }), 0);
+  assert.equal(delivery.submit({ ok: true }, { get suppressionKey() { throw new Error('invalid key'); } }), 0);
+  assert.equal(delivery.submit({ ok: true }), 1);
+  await received.promise;
+  assert.equal(delivery.getHealth().invalid, 3);
+  assert.equal(delivery.getHealth().reentrant, 1);
+  assert.equal(delivery.submit({ toJSON() { delivery.close(); return {}; } }), 0);
+  assert.equal(delivery.getHealth().afterClose, 1);
+  assert.equal(delivery.getHealth().destinations[0].pending, 0);
+});
+
+test('byte overflow is reported independently with safe original and delivery failure details', { timeout: 5000 }, async () => {
+  const reports = [];
+  const reported = Promise.withResolvers();
+  const delivery = createLogDelivery({
+    maxPendingBytes: 100,
+    codes: [-32603, 'EIO'],
+    destinations: [{ name: 'file', write() {
+      const cause = Object.assign(new Error('private destination details'), { code: 'EIO' });
+      throw Object.assign(new Error('private write details', { cause }), { deliveryOutcome: 'uncertain' });
+    } }],
+    onLoss(health) {
+      assert.equal(delivery.submit({ event: 'recursive' }), 0);
+      reports.push(health);
+      if (health.destinations[0].uncertain) reported.resolve(health);
+    },
+  });
+  const record = { fields: { code: -32603, errorType: 'ResponseError' }, body: 'private original evidence' };
+  assert.equal(delivery.submit(record), 1);
+  assert.equal(delivery.submit(record), 0);
+  const [file] = (await reported.promise).destinations;
+  assert.equal(file.overflow, 1);
+  assert.equal(file.uncertain, 1);
+  assert.equal(file.delivered, 0);
+  assert.equal(file.pendingBytes, 0);
+  assert.deepEqual(file.lastFailure, {
+    outcome: 'uncertain',
+    original: { code: -32603, errorType: 'ResponseError' },
+    diagnostic: { code: 'EIO', errorType: 'Error' },
+  });
+  assert.ok(!JSON.stringify(reports).includes('private'));
+  assert.equal(delivery.getHealth().lossReportFailures, 0);
+  assert.ok(delivery.getHealth().reentrant >= 1);
+  delivery.close();
+});
+
+test('a rejected write with confirmed bytes counts as delivered without replay', { timeout: 5000 }, async () => {
+  const reported = Promise.withResolvers();
+  const seen = [];
+  const delivery = createLogDelivery({
+    destinations: [{ name: 'file', write(record) {
+      seen.push(record);
+      throw Object.assign(new Error('lock cleanup failed'), { deliveryOutcome: 'written' });
+    } }],
+    onLoss: reported.resolve,
+  });
+  delivery.submit({ seq: 1 });
+  const [file] = (await reported.promise).destinations;
+  assert.deepEqual(seen, [{ seq: 1 }]);
+  assert.equal(file.postDeliveryFailures, 1);
+  assert.equal(file.delivered, 1);
+  assert.equal(file.uncertain, 0);
+  delivery.close();
+});
+
+test('a stalled loss reporter coalesces later losses without holding up delivery or close', { timeout: 5000 }, async () => {
+  const hold = Promise.withResolvers();
+  const firstReport = Promise.withResolvers();
+  const finalReport = Promise.withResolvers();
+  const delivered = Promise.withResolvers();
+  const reports = [];
+  const delivery = createLogDelivery({
+    capacity: 1,
+    destinations: [{ name: 'file', write: delivered.resolve }],
+    onLoss(health) {
+      reports.push(health);
+      if (reports.length === 1) {
+        firstReport.resolve();
+        return hold.promise;
+      }
+      finalReport.resolve(health);
+    },
+  });
+  try {
+    assert.equal(delivery.submit(null), 0);
+    await firstReport.promise;
+    for (let index = 0; index < 20; index++) assert.equal(delivery.submit(null), 0);
+    assert.equal(delivery.submit({ value: 1 }), 1);
+    assert.deepEqual(await delivered.promise, { value: 1 });
+    delivery.close();
+    assert.equal(reports.length, 1);
+    hold.resolve();
+    const health = await finalReport.promise;
+    assert.equal(health.closed, true);
+    assert.equal(health.invalid, 21);
+    assert.equal(health.destinations[0].delivered, 1);
+    assert.equal(reports.length, 2);
+  } finally {
+    delivery.close();
+    hold.resolve();
+  }
+});

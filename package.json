@@ -6,6 +6,8 @@
   "type": "module",
   "exports": {
     "./diagnostics/operation": "./src/diagnostics/operation.mjs",
+    "./diagnostics/trace": "./src/diagnostics/trace.mjs",
+    "./logging/delivery": "./src/logging/delivery.mjs",
     "./logging/redaction": "./src/logging/redaction.mjs",
     "./logging/logger": "./src/logging/logger.mjs",
     "./logging/rotating-file": "./src/logging/rotating-file.mjs",

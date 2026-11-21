@@ -42,6 +42,72 @@ test('a packed installation runs independently of the source checkout', async t 
   assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).enabled, true);
 });
 
+test('packed logging assets resolve locally without blocking the consumer when unavailable or stalled', {
+  timeout: 120_000,
+}, async t => {
+  const build = await fixture(t);
+  const home = await fixture(t);
+  const source = fileURLToPath(new URL('../', import.meta.url));
+  const npm = process.env.npm_execpath;
+  assert.ok(npm, 'Run package validation through npm test.');
+  const execute = promisify(execFile);
+  const run = (file, args, cwd = build) => execute(process.execPath, [file, ...args], {
+    cwd, windowsHide: true, timeout: 30_000,
+  });
+  async function pack(cwd) {
+    const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', build], cwd);
+    return join(build, JSON.parse(stdout)[0].filename);
+  }
+
+  const utilityPack = await pack(source);
+  await cp(new URL('./fixtures/logging-consumer/', import.meta.url), build, { recursive: true });
+  await writeFile(join(build, 'package.json'), JSON.stringify({
+    name: 'sample-logging-consumer', version: '1.0.0', private: true, type: 'module',
+    bin: { 'sample-logging-consumer': 'install.mjs' },
+    files: ['install.mjs', 'entry.mjs'],
+    bundleDependencies: ['copilot-extension-utils'],
+  }));
+  await run(npm, ['install', '--offline', '--ignore-scripts', '--save-exact', utilityPack]);
+  const installer = await pack(build);
+  await run(join(dirname(npm), 'npx-cli.js'), [
+    '--offline', '--ignore-scripts', `--package=${installer}`, '--', 'sample-logging-consumer', home,
+  ]);
+
+  const runtime = join(home, 'extensions', 'sample-logging');
+  const entry = join(runtime, 'entry.mjs');
+  const logPath = join(home, 'session.jsonl');
+  const normal = await run(entry, [logPath], home);
+  assert.deepEqual(JSON.parse(normal.stdout), { result: 'operation-result' });
+  assert.match(normal.stderr, /diagnostic-import-completed/);
+  const lines = (await readFile(logPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(lines.map(record => record.event), ['request.send.started', 'request.send.completed']);
+  assert.deepEqual(lines.map(record => record.fields.sessionId), ['sample-session', 'sample-session']);
+
+  const sourceFile = join(runtime, 'lib', 'diagnostics', 'trace.mjs');
+  const damaged = join(home, 'damaged.jsonl');
+  await writeFile(sourceFile, 'export function');
+  const bad = await run(entry, [damaged], home);
+  assert.deepEqual(JSON.parse(bad.stdout), { result: 'operation-result' });
+  assert.match(bad.stderr, /diagnostic-import-unavailable/);
+  await assert.rejects(readFile(damaged), { code: 'ENOENT' });
+
+  const stalledLog = join(home, 'stalled.jsonl');
+  await writeFile(sourceFile, "console.error('fixture-import-pending'); await new Promise(() => {});");
+  const stalled = await run(entry, [stalledLog], home);
+  assert.deepEqual(JSON.parse(stalled.stdout), { result: 'operation-result' });
+  assert.match(stalled.stderr, /fixture-import-pending/);
+  assert.doesNotMatch(stalled.stderr, /diagnostic-import-(?:completed|unavailable)/);
+  await assert.rejects(readFile(stalledLog), { code: 'ENOENT' });
+
+  const missingRuntime = join(home, 'missing-runtime');
+  await mkdir(missingRuntime);
+  const missingEntry = join(missingRuntime, 'entry.mjs');
+  await cp(entry, missingEntry);
+  const missing = await run(missingEntry, [join(home, 'missing.jsonl')], home);
+  assert.deepEqual(JSON.parse(missing.stdout), { result: 'operation-result' });
+  assert.match(missing.stderr, /diagnostic-import-unavailable/);
+});
+
 test('the documented starter installs via npx and runs its installed command without the build checkout', { timeout: 120_000 }, async t => {
   const directory = await realpath(await fixture(t));
   const source = fileURLToPath(new URL('../', import.meta.url));

@@ -79,3 +79,43 @@ it is already written.
   events, counters or historical reconstruction policies an application uses.
 - Use native command objects and explicitly injected application parsing/menu
   callbacks. Keep lifecycle and notifications independently importable.
+
+## Nonblocking diagnostic delivery
+
+Keep the existing awaited observer and logger contracts. Add an independent
+tracer for already-awaited operations and a separate bounded transport for
+prepared records. The tracer preserves the operation's result or original
+failure, including cancellation, regardless of diagnostic admission or delivery.
+Record start evidence before an operation settles; preserve approved numeric
+error codes in the same field as approved string codes.
+
+Each destination has its own pending limit and one active write. Count admission,
+delivery, suppression, overflow, failed writes, and uncertain writes separately.
+Suppress only after confirmed delivery; never retry an ambiguous write. Close
+must not await diagnostic delivery. Provide health independent of the primary
+sinks, without reentering the same delivery queue. An asynchronous queue cannot
+isolate a callback that blocks the JavaScript thread synchronously.
+
+`p-limit` 7.3.3 with `yocto-queue` 1.2.2 passed an isolated comparison on Node
+22 and 24 for serial, independently bounded writers. It still requires local
+admission limits, accounting, and a closed-state check: even with pending task
+rejections enabled, clearing the queue does not prevent a selected callback
+from starting. Keep the native scheduler rather than adding those dependencies.
+Reuse the existing coordinated rotator: a generic rotation stream would still
+need the agreed size, overlapping-writer and interrupted-write behavior.
+
+| Consumer evidence to preserve | Shared requirement and integration check |
+| --- | --- |
+| Startup stage, version and readiness | A dependency-free consumer bootstrap reports import/attach failures. An installed fixture still runs with missing, damaged or pending optional modules. |
+| Safe failure detail and actionable warnings | Allowlisted strings and integer error codes survive unchanged. Original and delivery failures remain distinct. User warnings stay at their existing decision point; compare text, count and severity. |
+| Operation and cancellation lifecycles | Start is observable while work is pending. Success, failure and cancellation retain their original outcomes even if a sink fails or stalls. |
+| State transitions, duplicates and recovery | Pass consumer records through unchanged after safe projection; compare transition order and cycle identity. Do not report persistence prematurely. |
+| Pressure, escalation and skipped work | Preserve consumer decisions and warning destinations. Suppression must not hide distinct requests, cycles or outcomes. |
+| Publication, ownership, expiry and shutdown | Keep consumer state and retry decisions independent of diagnostics. A stalled sink cannot stop publication or shutdown. |
+| Renderer, command and configuration warnings | Preserve existing meanings, warning positions and presentation without routing user warnings through file delivery. |
+
+The consumer owns semantic events, file discovery, the minimal bootstrap and
+user-visible warnings. Test persistent installer-to-runtime resolution on Node
+22 and 24; source imports alone are insufficient. The consumer review compares
+baseline and migrated records and warning behavior. Do not add host requests,
+polling, retries, deadlines, or startup gates solely for logging.
