@@ -56,3 +56,13 @@ test('checkout directory names cannot be mistaken for forbidden module dependenc
 test('there is no root barrel import that implicitly couples exposed modules', async () => {
   await assert.rejects(import('copilot-extension-utils'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 });
+
+test('host helpers and pure status and settings policies do not load installer or filesystem modules', async () => {
+  await isolated(`
+    await import('copilot-extension-utils/status/compose');
+    await import('copilot-extension-utils/commands/slash');
+    await import('copilot-extension-utils/lifecycle/cleanup');
+    await import('copilot-extension-utils/notifications/session');
+    await import('copilot-extension-utils/settings/scope');
+  `, ['/install/', '/files/', '/logging/', '/jsonc-parser/', 'node:fs', 'node:net']);
+});

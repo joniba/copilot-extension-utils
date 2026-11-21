@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { fixture } from './helpers.mjs';
@@ -40,4 +40,91 @@ test('a packed installation runs independently of the source checkout', async t 
   await execute(process.execPath, [script], { cwd: consumer, windowsHide: true });
   assert.equal(JSON.parse(await readFile(logPath, 'utf8')).fields.token, '[redacted]');
   assert.equal(JSON.parse(await readFile(settingsPath, 'utf8')).enabled, true);
+});
+
+test('the documented starter installs via npx and runs its installed command without the build checkout', { timeout: 120_000 }, async t => {
+  const directory = await realpath(await fixture(t));
+  const source = fileURLToPath(new URL('../', import.meta.url));
+  const npm = process.env.npm_execpath;
+  assert.ok(npm, 'Run package validation through npm test.');
+  const npx = join(dirname(npm), 'npx-cli.js');
+  const execute = promisify(execFile);
+  const run = (program, args, cwd = directory) => execute(process.execPath, [program, ...args], {
+    cwd, windowsHide: true, timeout: 30_000,
+  });
+  async function pack(cwd) {
+    const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', directory], cwd);
+    return join(directory, JSON.parse(stdout)[0].filename);
+  }
+  const utilityPack = await pack(source);
+  const starter = join(directory, 'starter');
+  await cp(join(source, 'examples', 'starter'), starter, { recursive: true });
+  await run(npm, ['install', '--ignore-scripts', '--offline', '--save-exact', utilityPack], starter);
+  const starterPack = await pack(starter);
+  const copilotHome = join(directory, 'isolated-home');
+  const invoke = flags => run(npx, [
+    '--offline', '--ignore-scripts', `--package=${starterPack}`, '--', 'extension-utils-starter',
+    ...flags, '--copilot-home', copilotHome,
+  ]);
+  assert.match((await invoke(['--help'])).stdout, /--doctor/);
+  assert.match((await invoke([])).stdout, /Checking prerequisites[\s\S]+Installation complete/);
+  assert.match((await invoke(['--doctor'])).stdout, /version verified/);
+  const target = join(copilotHome, 'extensions', 'extension-utils-starter');
+  assert.equal(JSON.parse(await readFile(join(target, 'installed.json'), 'utf8')).version, '1.0.0');
+  const script = join(copilotHome, 'verify.mjs');
+  await writeFile(script, `
+    import assert from 'node:assert/strict';
+    import { greetingCommand } from './extensions/extension-utils-starter/command.mjs';
+    const output = [];
+    const session = { sessionId: 'sample-session', log: message => output.push(message) };
+    const { name, handler } = greetingCommand(() => session);
+    assert.equal(name, 'utils-greet');
+    await handler({ sessionId: session.sessionId, args: 'hello' });
+    assert.deepEqual(output, ['Hello from the sample extension.']);
+  `);
+  await execute(process.execPath, [script], { cwd: copilotHome, windowsHide: true });
+  // Fail a replacement and lock release to exercise recovery through a combined error.
+  await writeFile(join(target, 'extension.mjs'), 'old entrypoint');
+  await writeFile(join(target, 'command.mjs'), 'old command');
+  const failed = join(target, 'command.mjs');
+  const installLock = join(target, 'installed.json.install.lock');
+  const fault = join(directory, 'fault.mjs');
+  await writeFile(fault, `
+    import fs from 'node:fs/promises';
+    import { syncBuiltinESMExports } from 'node:module';
+    const rename = fs.rename;
+    const unlink = fs.unlink;
+    fs.rename = async (from, to) => {
+      if (to === ${JSON.stringify(failed)}) throw Object.assign(new Error('Simulated write failure.'), { code: 'EIO' });
+      await rename(from, to);
+    };
+    fs.unlink = async path => {
+      if (path === ${JSON.stringify(installLock)}) throw Object.assign(new Error('Simulated release failure.'), { code: 'EIO' });
+      await unlink(path);
+    };
+    syncBuiltinESMExports();
+  `);
+  let backup;
+  await assert.rejects(
+    run('--import', [pathToFileURL(fault).href, join(starter, 'install.mjs'), '--update', '--copilot-home', copilotHome]),
+    error => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Activation: attempted; version receipt: not-attempted/);
+      const field = label => {
+        const line = error.stderr.split(/\r?\n/).find(value => value.startsWith(label));
+        assert.ok(line, `Missing recovery field: ${label}`);
+        return JSON.parse(line.slice(label.length));
+      };
+      assert.deepEqual(field('Known replaced files: '), [join(target, 'extension.mjs')]);
+      assert.equal(field('Last attempted file: '), failed);
+      backup = field('Backup directory retained: ');
+      return true;
+    },
+  );
+  assert.equal(await readFile(join(backup, 'extension.mjs'), 'utf8'), 'old entrypoint');
+  assert.equal(await readFile(join(backup, 'command.mjs'), 'utf8'), 'old command');
+  assert.notEqual(await readFile(join(target, 'extension.mjs'), 'utf8'), 'old entrypoint');
+  assert.equal(await readFile(failed, 'utf8'), 'old command');
+  assert.equal(JSON.parse(await readFile(join(target, 'installed.json'), 'utf8')).version, '1.0.0');
+  assert.equal(typeof JSON.parse(await readFile(installLock, 'utf8')).token, 'string');
 });

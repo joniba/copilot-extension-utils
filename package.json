@@ -12,7 +12,17 @@
     "./files/lock": "./src/files/lock.mjs",
     "./files/atomic": "./src/files/atomic.mjs",
     "./settings/jsonc": "./src/settings/jsonc.mjs",
-    "./settings/store": "./src/settings/store.mjs"
+    "./settings/store": "./src/settings/store.mjs",
+    "./settings/scope": "./src/settings/scope.mjs",
+    "./install/npx": "./src/install/npx.mjs",
+    "./install/progress": "./src/install/progress.mjs",
+    "./install/managed-files": "./src/install/managed-files.mjs",
+    "./install/run": "./src/install/run.mjs",
+    "./status/contributions": "./src/status/contributions.mjs",
+    "./status/compose": "./src/status/compose.mjs",
+    "./commands/slash": "./src/commands/slash.mjs",
+    "./lifecycle/cleanup": "./src/lifecycle/cleanup.mjs",
+    "./notifications/session": "./src/notifications/session.mjs"
   },
   "files": ["src/", "PLAN.md"],
   "scripts": {

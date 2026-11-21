@@ -96,6 +96,15 @@ test('stale expectations reject before calling the updater', async t => {
   assert.equal(await readFile(path, 'utf8'), 'current');
 });
 
+test('atomic updates return the update result after a custom lock releases', async t => {
+  const path = join(await fixture(t), 'state.txt');
+  const options = { async guard(_, write) { await write(); } };
+  assert.deepEqual(await updateTextFile(path, () => 'committed', options), { changed: true, text: 'committed' });
+  assert.equal(await readFile(path, 'utf8'), 'committed');
+  assert.equal(await updateTextFile(path, () => assert.fail(), { guard: () => 'skipped' }), 'skipped');
+  assert.equal(await readFile(path, 'utf8'), 'committed');
+});
+
 test('a temporary close failure cannot hide the write failure or replace existing data', async t => {
   const directory = await fixture(t);
   const path = join(directory, 'state.txt');
