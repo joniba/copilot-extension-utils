@@ -323,9 +323,11 @@ try {
 
 **Install and verify the sample offline in the same PowerShell session.** The
 sample bundles its installer dependency and copies only the runtime modules it uses.
-`npx` may be quiet while it prepares the package; installer progress starts
-at `Checking prerequisites`. Confirm any execution prompt only for the sample
-you just built.
+Either command can warn that a package was not found and will be installed.
+That warning refers to `npx` preparing the sample package, not to the state of
+the extension in the isolated home. The `--doctor` command only verifies the
+installed files. Installer progress starts at `Checking prerequisites`.
+Confirm any execution prompt only for the sample you just built.
 
 ```powershell
 $artifact = Join-Path $scratch $sample
