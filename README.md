@@ -10,21 +10,28 @@ does not require migrating an existing extension. See the plan for review gates.
 ## Use in your own extension
 
 ```text
-Pin a reviewed revision -> bundle the installer's dependencies -> install the runtime files
-                           npm runs this package's bin             Copilot loads this copy later
+Install from a reviewed branch -> bundle the installer's dependencies -> install the runtime files
+                                  npm runs the extension's bin          Copilot loads this copy later
 ```
 
-There is no npm registry release. Pack a checkout at a reviewed full commit
-SHA (`npm pack`) and use the resulting tarball as the dependency. In PowerShell,
-set `$utilsTarball` to its absolute path, then run this in your extension package:
+There is no npm registry release. Run `npm install` in your extension package
+using a GitHub branch name. For example, to try the logging feature branch:
 
 ```powershell
-npm install --save-exact $utilsTarball
+npm install 'git+https://github.com/joniba/copilot-extension-utils.git#feat/logging-diagnostics'
 ```
 
-Keep that tarball available to reproducible builds (or package from the same
-full commit again), and retain the dependency lockfile. Import only the subpath
-you use, for example:
+Keep `package-lock.json`: it records the exact commit npm resolved. Use `npm ci`
+to reproduce that install even if the branch moves. For local development, set
+`$utilsCheckout` to the absolute path of a checkout and install from the folder:
+
+```powershell
+npm install --install-links $utilsCheckout
+```
+
+`--install-links` installs a copy instead of linking back to the checkout.
+Use a GitHub branch rather than a machine-specific folder in shared builds.
+Import only the subpath you use, for example:
 
 ```js
 import { defineSlashCommand } from 'copilot-extension-utils/commands/slash';
@@ -287,45 +294,34 @@ not Windows permissions.
 
 Prerequisites: a checkout of this repository, Node.js 22+, npm, PowerShell
 7.4+, and access to your configured npm registry during the build. Start from
-the checkout root. The build copies the required files into a temporary directory
-and uses a separate npm cache there. It leaves the starting checkout, default
-npm cache and normal Copilot home untouched.
+the checkout root. The build copies the starter into a temporary directory and
+uses a separate npm cache there. The checkout, default npm cache and normal
+Copilot home remain untouched.
 
-**Build the sample tarball:**
+**Install the utilities from the checkout and pack the sample installer:**
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $source = (Get-Location).Path
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ("extension-utils-demo-" + [guid]::NewGuid())
-$build = Join-Path $scratch 'utils'
 $starter = Join-Path $scratch 'starter'
 $cache = Join-Path $scratch 'npm-cache'
-New-Item -ItemType Directory -Path $scratch, $build, $starter | Out-Null
-foreach ($file in 'package.json', 'package-lock.json', 'README.md', 'PLAN.md', 'src') {
-  Copy-Item -LiteralPath (Join-Path $source $file) -Destination $build -Recurse
-}
+New-Item -ItemType Directory -Path $scratch, $starter | Out-Null
 $sampleSource = Join-Path $source 'examples\starter'
 foreach ($file in 'package.json', 'install.mjs', 'extension.mjs', 'command.mjs') {
   Copy-Item -LiteralPath (Join-Path $sampleSource $file) -Destination $starter
 }
-Push-Location -LiteralPath $build
-try {
-  npm --cache $cache ci --ignore-scripts
-  $utils = (npm --cache $cache pack --json --pack-destination $scratch | ConvertFrom-Json).filename
-} finally {
-  Pop-Location
-}
 Push-Location -LiteralPath $starter
 try {
-  npm --cache $cache install --ignore-scripts --save-exact (Join-Path $scratch $utils)
+  npm --cache $cache install --ignore-scripts --install-links $source
   $sample = (npm --cache $cache pack --json --pack-destination $scratch | ConvertFrom-Json).filename
 } finally {
   Pop-Location
 }
 ```
 
-**Install and verify the tarball offline in the same PowerShell session.** The
+**Install and verify the sample offline in the same PowerShell session.** The
 sample bundles its installer dependency and copies only the runtime modules it uses.
 `npx` may be quiet while it prepares the package; installer progress starts
 at `Checking prerequisites`. Confirm any execution prompt only for the sample

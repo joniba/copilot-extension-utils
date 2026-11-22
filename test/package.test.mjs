@@ -54,12 +54,6 @@ test('packed logging assets resolve locally without blocking the consumer when u
   const run = (file, args, cwd = build) => execute(process.execPath, [file, ...args], {
     cwd, windowsHide: true, timeout: 30_000,
   });
-  async function pack(cwd) {
-    const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', build], cwd);
-    return join(build, JSON.parse(stdout)[0].filename);
-  }
-
-  const utilityPack = await pack(source);
   await cp(new URL('./fixtures/logging-consumer/', import.meta.url), build, { recursive: true });
   await writeFile(join(build, 'package.json'), JSON.stringify({
     name: 'sample-logging-consumer', version: '1.0.0', private: true, type: 'module',
@@ -67,8 +61,9 @@ test('packed logging assets resolve locally without blocking the consumer when u
     files: ['install.mjs', 'entry.mjs'],
     bundleDependencies: ['copilot-extension-utils'],
   }));
-  await run(npm, ['install', '--offline', '--ignore-scripts', '--save-exact', utilityPack]);
-  const installer = await pack(build);
+  await run(npm, ['install', '--offline', '--ignore-scripts', '--install-links', source]);
+  const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', build]);
+  const installer = join(build, JSON.parse(stdout)[0].filename);
   await run(join(dirname(npm), 'npx-cli.js'), [
     '--offline', '--ignore-scripts', `--package=${installer}`, '--', 'sample-logging-consumer', home,
   ]);
@@ -118,15 +113,11 @@ test('the documented starter installs via npx and runs its installed command wit
   const run = (program, args, cwd = directory) => execute(process.execPath, [program, ...args], {
     cwd, windowsHide: true, timeout: 30_000,
   });
-  async function pack(cwd) {
-    const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', directory], cwd);
-    return join(directory, JSON.parse(stdout)[0].filename);
-  }
-  const utilityPack = await pack(source);
   const starter = join(directory, 'starter');
   await cp(join(source, 'examples', 'starter'), starter, { recursive: true });
-  await run(npm, ['install', '--ignore-scripts', '--offline', '--save-exact', utilityPack], starter);
-  const starterPack = await pack(starter);
+  await run(npm, ['install', '--ignore-scripts', '--offline', '--install-links', source], starter);
+  const { stdout } = await run(npm, ['pack', '--json', '--pack-destination', directory], starter);
+  const starterPack = join(directory, JSON.parse(stdout)[0].filename);
   const copilotHome = join(directory, 'isolated-home');
   const invoke = flags => run(npx, [
     '--offline', '--ignore-scripts', `--package=${starterPack}`, '--', 'extension-utils-starter',
